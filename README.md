@@ -11,6 +11,7 @@ B. Liu, S. Gao, X. Liu, X. Cheng, and L. Yang, "WiFo: Wireless Foundation Model 
 
 ## Dataset Preparation
 The dataset used for inference is available in [[Testing Dataset]](https://huggingface.co/datasets/liuboxun/WiFo-dataset).
+The dataset used for pre-training is available in [[Pretraining Dataset]](https://disk.pku.edu.cn/link/AA003E48DD5EF343C18ACD92ACF3BB8E3E)
 
 
 ## Get Started
