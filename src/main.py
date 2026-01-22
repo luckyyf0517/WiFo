@@ -2,18 +2,29 @@
 import argparse
 import random
 import os
+import logging
 from model import WiFo_model
 from train import TrainLoop
 
 import setproctitle
 import torch
 
-from DataLoader import data_load_main
+from dataloader import data_load_main
 from utils import *
 
 import torch as th
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+
+
+def setup_logging():
+    """Setup logging configuration"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    return logging.getLogger(__name__)
 
 
 def setup_init(seed):
@@ -81,17 +92,16 @@ def create_argparser():
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 def main():
-
+    logger = setup_logging()
     th.autograd.set_detect_anomaly(True)
-    
+
     args = create_argparser().parse_args()
     setproctitle.setproctitle("{}-{}".format(args.process_name, args.device_id))
-    setup_init(100)  # 随机种子设定100
+    setup_init(100)
 
-    test_data = data_load_main(args) # 加载数据
+    test_data = data_load_main(args)
 
     args.folder = 'Dataset_{}_Task_{}_FewRatio_{}_{}_{}/'.format(args.dataset, args.task, args.few_ratio, args.size, args.note)
-
 
     args.folder = 'Test_'+args.folder
 
@@ -109,10 +119,10 @@ def main():
     model = WiFo_model(args=args).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f'Total number of parameters: {total_params}')
+    logger.info(f'Total number of parameters: {total_params}')
     if args.file_load_path != '':
-        model.load_state_dict(torch.load('{}.pkl'.format(args.file_load_path),map_location=device), strict=False)
-        print('pretrained model loaded'+args.file_load_path)
+        model.load_state_dict(torch.load('{}.pkl'.format(args.file_load_path), map_location=device, weights_only=True), strict=False)
+        logger.info(f'Pretrained model loaded: {args.file_load_path}')
     TrainLoop(
         args=args,
         writer=writer,

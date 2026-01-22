@@ -10,7 +10,11 @@ import h5py
 import hdf5storage
 import random
 import math
+import logging
+from tqdm import tqdm
 from torch.utils.data import Dataset
+
+logger = logging.getLogger(__name__)
 
 class MyDataset(Dataset):
     def __init__(self, X_train):
@@ -29,7 +33,7 @@ class MyDataset(Dataset):
 
 def data_load_single(args, dataset): # 加载单个数据集
 
-    folder_path_test = '../dataset/{}/X_test.mat'.format(dataset)
+    folder_path_test = 'dataset/{}/X_test.mat'.format(dataset)
 
     X_test = hdf5storage.loadmat(folder_path_test)
     X_test_complex = torch.tensor(np.array(X_test['X_val'], dtype=complex)).unsqueeze(1)
@@ -46,13 +50,13 @@ def data_load_single(args, dataset): # 加载单个数据集
     return  test_data
 
 def data_load(args):
-
     test_data_all = []
+    datasets = args.dataset.split('*')
 
-    for dataset_name in args.dataset.split('*'):
+    for dataset_name in tqdm(datasets, desc="Loading datasets", unit="set", ncols=100):
         test_data = data_load_single(args, dataset_name)
         test_data_all.append(test_data)
-    
+
     return test_data_all
 
 

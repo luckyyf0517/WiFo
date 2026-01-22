@@ -7,6 +7,9 @@ from sklearn.metrics import mean_squared_error,mean_absolute_error
 import math
 import time
 import collections
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TrainLoop:
@@ -104,8 +107,20 @@ class TrainLoop:
         torch.save(self.model.state_dict(), self.args.model_path+'model_save/model_best.pkl')
         self.best_nmse = nmse
         self.writer.add_scalar('Evaluation/NMSE_best', self.best_nmse, step)
-        print('\nNMSE_best:{}\n'.format(self.best_nmse))
-        print(str(nmse_key_result) + '\n')
+        logger.info(f'NMSE_best: {self.best_nmse:.6f}')
+
+        # Format results nicely
+        logger.info('=' * 80)
+        logger.info('Results per dataset:')
+        for dataset, strategies in nmse_key_result.items():
+            for strategy, ratios in strategies.items():
+                for ratio, value in ratios.items():
+                    if isinstance(value, dict) and 'nmse' in value:
+                        logger.info(f'  {dataset:6s} | {strategy:10s} | ratio={ratio:.2f} | NMSE={value["nmse"]:.6f}')
+                    else:
+                        logger.info(f'  {dataset:6s} | {strategy:10s} | ratio={ratio:.2f} | NMSE={value:.6f}')
+        logger.info('=' * 80)
+
         with open(self.args.model_path+'result.txt', 'w') as f:
             f.write('stage:{}, epoch:{}, best nmse: {}\n'.format(self.args.stage, step, self.best_nmse))
             f.write(str(nmse_key_result) + '\n')

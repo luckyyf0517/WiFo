@@ -9,12 +9,15 @@ from timm.models.layers import to_2tuple
 from timm.models.vision_transformer import DropPath, Mlp
 from einops import rearrange
 
-from Embed import DataEmbedding, get_2d_sincos_pos_embed, get_1d_sincos_pos_embed_from_grid, get_1d_sincos_pos_embed_from_grid_with_resolution
+from embed import DataEmbedding, get_2d_sincos_pos_embed, get_1d_sincos_pos_embed_from_grid, get_1d_sincos_pos_embed_from_grid_with_resolution
 
 from mask_strategy import *
 import copy
 import time
 from scipy import interpolate
+import logging
+
+logger = logging.getLogger(__name__)
 
 def WiFo_model(args, **kwargs):
 
@@ -282,7 +285,7 @@ class WiFo(nn.Module):
 
         self.initialize_weights_trivial()
 
-        print("model initialized!")
+        logger.info("Model initialized")
 
     def init_emb(self):
         torch.nn.init.trunc_normal_(self.Embedding.temporal_embedding.hour_embed.weight.data, std=0.02)
