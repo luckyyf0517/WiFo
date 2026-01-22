@@ -565,7 +565,281 @@ def main():
 
 ---
 
-## 6. Key Implementation Details
+## 6. Complete Data Flow (D1 Dataset Example)
+
+This section documents the complete data flow through the WiFo model using D1 dataset as an example.
+
+### 6.1 Input Specifications
+
+**D1 Dataset:**
+- Shape: [N=1000, K=24, T=4, Ant=128]
+- N: number of samples
+- K: subcarriers (24)
+- T: timesteps (4)
+- Ant: antennas (128)
+
+### 6.2 Data Loading Pipeline
+
+**Step 1: Raw Data Loading**
+```
+X_test['X_val']: [1000, 24, 4, 128]  (complex128)
+```
+
+**Step 2: Real/Imaginary Split**
+```python
+# dataloader.py:38-42
+X_test_real = X_test_complex.real.unsqueeze(1)  # [1000, 1, 24, 4, 128]
+X_test_imag = X_test_complex.imag.unsqueeze(1)  # [1000, 1, 24, 4, 128]
+X_test = torch.cat((X_test_real, X_test_imag), dim=1).float()
+# Output: [1000, 2, 24, 4, 128]
+```
+
+**Step 3: DataLoader Batching**
+```
+batch: [128, 1, 2, 24, 4, 128]  # added batch dimension
+batch.squeeze(1): [128, 2, 24, 4, 128]
+```
+
+### 6.3 Tokenization (Conv3D)
+
+**Input:** [N, 2, K=24, T=4, Ant=128]
+
+**Conv3D Configuration:**
+```python
+# embed.py:14-16
+kernel_size = [t_patch_size=4, patch_size=4, patch_size=4]
+stride = [4, 4, 4]  # non-overlapping patches
+in_channels = 2  # real + imaginary
+out_channels = 256  # embedding dimension
+```
+
+**After Conv3D:**
+```
+[N, 256, T=4/4=1, K=24/4=6, Ant=128/4=32]
+= [128, 256, 1, 6, 32]
+```
+
+**Flatten & Reshape:**
+```python
+# embed.py:24-26
+x.flatten(3):              [128, 256, 1, 192]
+torch.einsum("ncts->ntsc"): [128, 1, 192, 256]
+reshape:                   [128, 192, 256]
+```
+
+**Token Count:** 1 x 6 x 32 = 192 tokens, each 256-dimensional
+
+### 6.4 Masking Stage (Temporal Masking, ratio=0.5)
+
+**Input:** [N, 192, 256]
+
+**Temporal Masking Process:**
+```python
+# mask_strategy.py:35-67
+x = x.reshape(N, T=1, HxW=192, 256)
+len_keep = int(T * (1 - mask_ratio)) = int(1 * 0.5) = 0
+
+# For T=1 with mask_ratio=0.5, special handling preserves all tokens
+```
+
+**Outputs:**
+- x_masked: [N, 96, 256] - kept tokens (50%)
+- mask: [N, 192] - binary mask (0=keep, 1=remove)
+- ids_restore: [N, 192] - indices to restore full sequence
+- ids_keep: [N, 96] - indices of kept tokens
+
+### 6.5 Position Encoding (SinCos_3D)
+
+**Dimension Split for embed_dim=256:**
+```python
+# model.py:438-441
+ED1 = 86  # temporal dimension
+ED2 = 86  # frequency (subcarrier) dimension
+ED3 = 84  # spatial (antenna) dimension
+```
+
+**3D Grid Generation:**
+```python
+T, H, W = 1, 6, 32
+tt, hh, ww = torch.meshgrid(t, h, w, indexing='ij')
+# tt: [1, 6, 32], hh: [1, 6, 32], ww: [1, 6, 32]
+```
+
+**Position Embedding Calculation:**
+```python
+# embed.py:195-214
+emb_t = get_1d_sincos_pos_embed_from_grid_with_resolution(86, tt.flatten(), scale[0])
+emb_h = get_1d_sincos_pos_embed_from_grid_with_resolution(86, hh.flatten(), scale[1])
+emb_w = get_1d_sincos_pos_embed_from_grid_with_resolution(84, ww.flatten(), scale[2])
+
+pos_embed = np.concatenate([emb_t, emb_h, emb_w], axis=1)
+# pos_embed: [192, 256]
+```
+
+**Add to Kept Tokens:**
+```python
+# model.py:586-588
+pos_embed_sort = torch.gather(pos_embed, dim=1, index=ids_keep...)
+# pos_embed_sort: [N, 96, 256]
+
+x_attn = x_masked + pos_embed_sort: [N, 96, 256]
+```
+
+### 6.6 Encoder Transformer
+
+**Input:** [N, 96, 256] - 96 visible tokens
+
+**Transformer Block (6 layers):**
+```python
+# model.py:151-193
+for blk in self.blocks:  # 6 blocks
+    x = Block(x)
+    # Block structure:
+    #   LayerNorm -> Multi-Head Attention (8 heads) -> Residual
+    #   LayerNorm -> MLP (256 -> 512 -> 256) -> Residual
+
+# Multi-Head Attention:
+#   Q, K, V: [N, 8, 96, 32]  (d_model/num_heads = 256/8 = 32)
+#   Attention: softmax(QK^T / sqrt(d)) @ V
+#   Output: [N, 96, 256]
+```
+
+**Output:** [N, 96, 256] - encoded visible tokens
+
+### 6.7 Decoder Embedding & Restore
+
+**Decoder Projection:**
+```python
+# model.py:608
+x = self.decoder_embed(x)  # Linear(256 -> 256)
+# x: [N, 96, 256]
+```
+
+**Restore Full Sequence:**
+```python
+# mask_strategy.py:105-115 (temporal_restore)
+mask_tokens = mask_token.repeat(N, 192 - 96, 1)  # [N, 96, 256]
+x_ = torch.cat([x, mask_tokens], dim=1)  # [N, 192, 256]
+
+# Unshuffle to restore original order
+x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, 256))
+# x_: [N, 192, 256]
+```
+
+**Result:** [N, 192, 256] - full sequence with mask tokens at masked positions
+
+### 6.8 Decoder Position Encoding
+
+**Add Decoder Position Embedding:**
+```python
+# model.py:624-626
+decoder_pos_embed = self.pos_embed_dec(ids_restore, N, input_size)
+# decoder_pos_embed: [N, 192, 256]
+
+x_attn = x_ + decoder_pos_embed: [N, 192, 256]
+```
+
+### 6.9 Decoder Transformer
+
+**Input:** [N, 192, 256] - full sequence including mask tokens
+
+**Transformer Blocks (4 layers):**
+```python
+# model.py:635-637
+for blk in self.decoder_blocks:  # 4 blocks
+    x_attn = Block(x_attn)
+    # Same block structure as encoder
+```
+
+**Self-Attention Mechanism:**
+- Visible tokens (encoded features) attend to all tokens
+- Information propagates from visible to masked positions
+- Mask tokens learn to predict missing content
+
+**Output:** [N, 192, 256] - all tokens reconstructed
+
+### 6.10 Prediction Projection
+
+**Project to Patch Content:**
+```python
+# model.py:679
+pred = self.decoder_pred(x_attn)  # Linear(256 -> patch_content)
+```
+
+**Patch Content Size:**
+```
+t_patch × patch² × 2 = 4 × 4 × 4 × 2 = 128  (real+imag)
+or for complex: t_patch × patch² = 4 × 4 × 4 = 64
+```
+
+**Output:**
+```
+pred: [N, 192, 64]  (complex predictions)
+pred_complex = pred[:, :, :64] + 1j * pred[:, :, 64:]
+```
+
+### 6.11 Loss Computation
+
+**Patchify Target:**
+```python
+# model.py:649
+target = self.patchify(imgs_n)
+# imgs_n: [N, 2, 4, 24, 128]
+# target: [N, 192, 64]  (complex)
+```
+
+**MSE Loss on Masked Patches:**
+```python
+# model.py:654-658
+loss = torch.abs(pred - target) ** 2  # [N, 192]
+loss = loss.mean(dim=-1)  # [N, 192]
+
+mask: [N, 192]  # 0=keep, 1=remove
+
+# Loss only on masked patches
+loss1 = (loss * mask).sum() / mask.sum()  # primary loss
+loss2 = (loss * (1-mask)).sum() / (1-mask).sum()  # monitoring loss
+```
+
+### 6.12 Token Count for All Datasets
+
+| Dataset | Shape (K,T,Ant) | Tokens | Calculation |
+|---------|----------------|--------|-------------|
+| D1 | (24,4,128) | 192 | (4/4)×(24/4)×(128/4) |
+| D2 | (24,8,128) | 384 | (8/4)×(24/4)×(128/4) |
+| D3 | (16,8,64) | 128 | (8/4)×(16/4)×(64/4) |
+| D4 | (16,32,32) | 256 | (32/4)×(16/4)×(32/4) |
+| D5 | (24,4,64) | 96 | (4/4)×(24/4)×(64/4) |
+| D6 | (24,8,128) | 384 | (8/4)×(24/4)×(128/4) |
+| D7 | (16,32,32) | 256 | (32/4)×(16/4)×(32/4) |
+| D8 | (16,16,64) | 256 | (16/4)×(16/4)×(64/4) |
+| D9 | (24,4,128) | 192 | (4/4)×(24/4)×(128/4) |
+| D10 | (24,8,64) | 192 | (8/4)×(24/4)×(64/4) |
+| D11 | (16,16,64) | 256 | (16/4)×(16/4)×(64/4) |
+| D12 | (16,32,32) | 256 | (32/4)×(16/4)×(32/4) |
+| D13 | (24,16,64) | 384 | (16/4)×(24/4)×(64/4) |
+| D14 | (24,8,128) | 384 | (8/4)×(24/4)×(128/4) |
+| D15 | (16,16,64) | 256 | (16/4)×(16/4)×(64/4) |
+| D16 | (16,32,32) | 256 | (32/4)×(16/4)×(32/4) |
+
+### 6.13 Summary Table
+
+| Stage | Input Shape | Output Shape | Key Operation |
+|-------|-------------|--------------|---------------|
+| Data Loading | [1000,24,4,128] | [128,2,24,4,128] | Real/imag split + batch |
+| Tokenization | [128,2,24,4,128] | [128,192,256] | Conv3D + flatten |
+| Masking | [128,192,256] | [128,96,256] | Temporal masking (50%) |
+| Pos Encoding | [128,96,256] | [128,96,256] | Add 3D sinusoidal PE |
+| Encoder | [128,96,256] | [128,96,256] | 6× Transformer Block |
+| Decoder Restore | [128,96,256] | [128,192,256] | Insert mask tokens |
+| Decoder Pos Enc | [128,192,256] | [128,192,256] | Add decoder PE |
+| Decoder | [128,192,256] | [128,192,256] | 4× Transformer Block |
+| Prediction | [128,192,256] | [128,192,64] | Linear projection |
+| Loss | pred vs target | scalar | MSE on masked |
+
+---
+
+## 7. Key Implementation Details
 
 ### 6.1 Complex Number Handling
 
@@ -600,7 +874,7 @@ The model supports multiple position embedding modes ([model.py:582-591](src/mod
 
 ---
 
-## Summary
+## 8. Summary
 
 WiFo implements a sophisticated Masked Autoencoder specifically designed for wireless CSI reconstruction:
 

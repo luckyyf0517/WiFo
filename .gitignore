@@ -77,3 +77,4 @@ htmlcov/
 # Custom
 .claude
 experiments/
+test*
