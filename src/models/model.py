@@ -26,8 +26,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 def WiFo_model(args, **kwargs):
+    # Get model size - support both flat and nested config
+    size = args.size if hasattr(args, 'size') else args.model.size
+    t_patch_size = args.t_patch_size if hasattr(args, 't_patch_size') else args.model.t_patch_size
+    patch_size = args.patch_size if hasattr(args, 'patch_size') else args.model.patch_size
+    pos_emb = args.pos_emb if hasattr(args, 'pos_emb') else args.model.pos_emb
+    no_qkv_bias = args.no_qkv_bias if hasattr(args, 'no_qkv_bias') else args.model.no_qkv_bias
 
-    if args.size == 'small':
+    if size == 'small':
         model = WiFo(
             embed_dim=256,
             depth=6,
@@ -36,16 +42,16 @@ def WiFo_model(args, **kwargs):
             num_heads=8,
             decoder_num_heads=8,
             mlp_ratio=2,
-            t_patch_size = args.t_patch_size,
-            patch_size = args.patch_size,
+            t_patch_size = t_patch_size,
+            patch_size = patch_size,
             norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            pos_emb = args.pos_emb,
-            no_qkv_bias = bool(args.no_qkv_bias),
+            pos_emb = pos_emb,
+            no_qkv_bias = bool(no_qkv_bias),
             args = args,
             **kwargs,
         )
         return model
-    elif args.size == 'little':
+    elif size == 'little':
         model = WiFo(
             embed_dim=128,
             depth=6,
@@ -54,16 +60,16 @@ def WiFo_model(args, **kwargs):
             num_heads=8,
             decoder_num_heads=8,
             mlp_ratio=2,
-            t_patch_size = args.t_patch_size,
-            patch_size = args.patch_size,
+            t_patch_size = t_patch_size,
+            patch_size = patch_size,
             norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            pos_emb = args.pos_emb,
-            no_qkv_bias = bool(args.no_qkv_bias),
+            pos_emb = pos_emb,
+            no_qkv_bias = bool(no_qkv_bias),
             args = args,
             **kwargs,
         )
         return model
-    elif args.size == 'tiny':
+    elif size == 'tiny':
         model = WiFo(
             embed_dim=64,
             depth=6,
@@ -72,16 +78,16 @@ def WiFo_model(args, **kwargs):
             num_heads=8,
             decoder_num_heads=8,
             mlp_ratio=2,
-            t_patch_size = args.t_patch_size,
-            patch_size = args.patch_size,
+            t_patch_size = t_patch_size,
+            patch_size = patch_size,
             norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            pos_emb = args.pos_emb,
-            no_qkv_bias = bool(args.no_qkv_bias),
+            pos_emb = pos_emb,
+            no_qkv_bias = bool(no_qkv_bias),
             args = args,
             **kwargs,
         )
         return model
-    elif args.size == 'base':
+    elif size == 'base':
         model = WiFo(
             embed_dim=512,
             depth=6,
@@ -90,15 +96,53 @@ def WiFo_model(args, **kwargs):
             num_heads=8,
             decoder_num_heads=8,
             mlp_ratio=2,
-            t_patch_size = args.t_patch_size,
-            patch_size = args.patch_size,
+            t_patch_size = t_patch_size,
+            patch_size = patch_size,
             norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            pos_emb = args.pos_emb,
-            no_qkv_bias = bool(args.no_qkv_bias),
+            pos_emb = pos_emb,
+            no_qkv_bias = bool(no_qkv_bias),
             args = args,
             **kwargs,
         )
         return model
+    elif size == 'large':
+        model = WiFo(
+            embed_dim=1024,
+            depth=6,
+            decoder_embed_dim=1024,
+            decoder_depth=4,
+            num_heads=16,
+            decoder_num_heads=16,
+            mlp_ratio=2,
+            t_patch_size=t_patch_size,
+            patch_size=patch_size,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+            pos_emb=pos_emb,
+            no_qkv_bias=bool(no_qkv_bias),
+            args=args,
+            **kwargs,
+        )
+        return model
+    elif size == 'middle':
+        model = WiFo(
+            embed_dim=384,
+            depth=6,
+            decoder_embed_dim=384,
+            decoder_depth=4,
+            num_heads=8,
+            decoder_num_heads=8,
+            mlp_ratio=2,
+            t_patch_size=t_patch_size,
+            patch_size=patch_size,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+            pos_emb=pos_emb,
+            no_qkv_bias=bool(no_qkv_bias),
+            args=args,
+            **kwargs,
+        )
+        return model
+    else:
+        raise ValueError(f"Unknown model size: {size}. Supported sizes: tiny, little, small, middle, base, large")
 
 
 class Attention(nn.Module):
@@ -263,7 +307,7 @@ class WiFo(nn.Module):
 
         self.norm = norm_layer(embed_dim)
 
-        self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias= not self.args.no_qkv_bias)
+        self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias= not no_qkv_bias)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
@@ -365,8 +409,8 @@ class WiFo(nn.Module):
         # 输入为包含实部和虚部的imgs，输出为复数imgs
         """
         N, _, T, H, W = imgs.shape  # N, 2, T, H, W
-        p = self.args.patch_size
-        u = self.args.t_patch_size
+        p = 4  # fixed patch_size
+        u = 4  # fixed t_patch_size
         assert H % p == 0 and W % p == 0 and T % u == 0
         h = H // p
         w = W // p
@@ -570,7 +614,7 @@ class WiFo(nn.Module):
         x = self.Embedding(x)
         _, L, C = x.shape
 
-        T = T // self.args.t_patch_size  # patch_size之后的时间长度
+        T = T // 4  # fixed t_patch_size
         H = H // self.patch_size
         W = W // self.patch_size
 

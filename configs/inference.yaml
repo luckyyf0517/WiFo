@@ -1,0 +1,75 @@
+# WiFo Inference Configuration
+# Zero-shot evaluation on all D1-D16 datasets using temporal masking
+
+experiment:
+  name: wifo_zero_shot_inference
+  note: ''
+  tags: [inference, zero_shot]
+
+model:
+  size: base
+  patch_size: 4
+  t_patch_size: 4
+  pos_emb: SinCos_3D
+  no_qkv_bias: 0
+  conv_num: 3
+
+training:
+  optimizer:
+    lr: 0.0005
+    min_lr: 0.00001
+    weight_decay: 0.05
+  scheduler:
+    total_epochs: 200
+    warmup_epochs: 5
+  batch_size: 128
+  few_ratio: 0.0  # Zero-shot: no fine-tuning
+  gradient_clip: 0.05
+  mask:
+    strategy: temporal
+    strategy_mode: none
+    ratio: 0.5
+  # Legacy aliases for code compatibility
+  mask_strategy: temporal
+  mask_strategy_random: none
+  mask_ratio: 0.5
+  lr: 0.0005
+  min_lr: 0.00001
+  weight_decay: 0.05
+  early_stop: 5
+  clip_grad: 0.05
+  lr_anneal_steps: 200
+
+data:
+  dataset: "D1*D2*D3*D4*D5*D6*D7*D8*D9*D10*D11*D12*D13*D14*D15*D16"
+  data_path: dataset/
+  num_workers: 32
+  pin_memory: true
+  prefetch_factor: 4
+
+trainer:
+  accelerator: auto
+  devices: auto
+  precision: 32-true
+
+paths:
+  output_dir: ./experiments
+  log_dir: ./logs
+
+system:
+  seed: 100
+  device_id: 0
+  process_name: wifo_inference
+
+# Legacy flat parameters (for compatibility)
+task: short
+file_load_path: ''
+his_len: 6
+pred_len: 6
+few_ratio: 0.0
+stage: 0
+used_data: ''
+log_interval: 5
+total_epoches: 200
+machine: localhost
+random: true

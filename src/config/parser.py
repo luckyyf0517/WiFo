@@ -51,7 +51,7 @@ def parse_cli_overrides(args: List[str]) -> Dict[str, Any]:
             i += 1
 
         # Parse dot notation keys
-        override = _set_nested_dict(overrides, key, _convert_value(value))
+        override = _set_nested_dict(overrides, key, value)
         overrides = merge_dicts(overrides, override)
 
     return overrides
@@ -176,16 +176,28 @@ def config_to_namespace(config: Dict[str, Any]) -> Any:
     class ConfigNamespace:
         def __init__(self, config_dict: Dict[str, Any]):
             self._config = config_dict
-            # Flatten for attribute access
-            flat = flatten_config(config_dict)
-            for key, value in flat.items():
-                setattr(self, key, value)
+            # Recursively create nested namespace objects
+            for key, value in config_dict.items():
+                if isinstance(value, dict):
+                    setattr(self, key, ConfigNamespace(value))
+                else:
+                    setattr(self, key, value)
 
         def to_dict(self) -> Dict[str, Any]:
             """Convert back to dictionary."""
             return self._config.copy()
 
         def __contains__(self, key: str) -> bool:
-            return key in flatten_config(self._config)
+            return key in self._config
+
+        def __getattr__(self, key: str) -> Any:
+            if key.startswith('_'):
+                return object.__getattribute__(self, key)
+            if key in self._config:
+                value = self._config[key]
+                if isinstance(value, dict):
+                    return ConfigNamespace(value)
+                return value
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
 
     return ConfigNamespace(config)

@@ -113,11 +113,17 @@ def get_default_config() -> Dict[str, Any]:
             'batch_size': 128,
             'gradient_clip': 0.05,
             'early_stop': 5,
+            'few_ratio': 0.5,
             'mask': {
                 'strategy': 'random',
                 'strategy_mode': 'batch',
                 'ratio': 0.5,
             },
+            # Legacy aliases for backward compatibility with code
+            'mask_strategy': 'random',
+            'mask_strategy_random': 'batch',
+            'mask_ratio': 0.5,
+            # Legacy flat parameters for backward compatibility
             'lr': 5e-4,
             'min_lr': 1e-5,
             'weight_decay': 0.05,

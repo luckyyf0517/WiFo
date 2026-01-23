@@ -49,7 +49,6 @@ uv.lock
 *.mat
 *.h5
 *.hdf5
-data/
 
 # Model checkpoints and weights
 *.pth

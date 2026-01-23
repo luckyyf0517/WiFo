@@ -70,8 +70,11 @@ class DataEmbedding(nn.Module):
     def __init__(self, c_in, d_model, dropout=0.1, args=None, size1 = 48, size2=7 ):
         super(DataEmbedding, self).__init__()
         self.args = args
-        self.value_embedding = TokenEmbedding(c_in=c_in, d_model=d_model, t_patch_size = args.t_patch_size,  patch_size=args.patch_size)
-        #self.temporal_embedding = TemporalEmbedding(t_patch_size = args.t_patch_size, d_model=d_model, hour_size  = size1, weekday_size = size2)
+        # Fixed patch sizes as per paper
+        t_patch_size = 4
+        patch_size = 4
+        self.value_embedding = TokenEmbedding(c_in=c_in, d_model=d_model, t_patch_size=t_patch_size, patch_size=patch_size)
+        #self.temporal_embedding = TemporalEmbedding(t_patch_size = t_patch_size, d_model=d_model, hour_size  = size1, weekday_size = size2)
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x):

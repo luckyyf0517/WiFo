@@ -108,21 +108,30 @@ def create_argparser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_config_and_args(known_args: list) -> argparse.Namespace:
+def parse_config_and_args(cli_args: list) -> argparse.Namespace:
     """
     Parse configuration file and CLI overrides into a namespace.
 
     Args:
-        known_args: List of known command-line arguments
+        cli_args: List of command-line arguments (e.g., from sys.argv[1:])
 
     Returns:
         Namespace with all configuration parameters
     """
+    # Check for help flag first
+    if '-h' in cli_args or '--help' in cli_args:
+        parser = create_argparser()
+        parser.print_help()
+        sys.exit(0)
+
     # Check if config file is specified
     config_path = None
-    for i, arg in enumerate(known_args):
-        if arg.startswith('--config=') or arg.startswith('--config '):
-            config_path = arg.split('=', 1)[1] if '=' in arg else known_args[i + 1]
+    for i, arg in enumerate(cli_args):
+        if arg.startswith('--config='):
+            config_path = arg.split('=', 1)[1]
+            break
+        elif arg == '--config' and i + 1 < len(cli_args):
+            config_path = cli_args[i + 1]
             break
 
     # Load configuration
@@ -134,10 +143,22 @@ def parse_config_and_args(known_args: list) -> argparse.Namespace:
         config = get_default_config()
 
     # Parse CLI overrides (args that are not --config)
-    cli_args = [arg for arg in known_args if arg not in ['--config', '-h', '--help']]
-    if cli_args:
+    override_args = []
+    skip_next = False
+    for i, arg in enumerate(cli_args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith('--config'):
+            # Skip --config and its value
+            if '=' not in arg and i + 1 < len(cli_args) and not cli_args[i + 1].startswith('--'):
+                skip_next = True
+            continue
+        override_args.append(arg)
+
+    if override_args:
         logger.info("Applying CLI overrides...")
-        cli_overrides = parse_cli_overrides(cli_args)
+        cli_overrides = parse_cli_overrides(override_args)
         from config.loader import merge_configs
         config = merge_configs(config, cli_overrides)
 
@@ -200,16 +221,13 @@ def create_callbacks(args) -> list:
 def main():
     """Main training function."""
     logger = setup_logging()
-    parser = create_argparser()
-    known_args, unknown_args = parser.parse_known_args()
+
+    # Parse config and CLI overrides from sys.argv
+    args = parse_config_and_args(sys.argv[1:])
 
     # Show help and exit if requested
-    if known_args.help:
-        parser.print_help()
-        sys.exit(0)
-
-    # Parse config and CLI overrides
-    args = parse_config_and_args(known_args + unknown_args)
+    if '--help' in sys.argv or '-h' in sys.argv:
+        return  # parse_config_and_args already showed help
 
     # Set process title
     setproctitle.setproctitle(f"{args.system.process_name}-{args.system.device_id}")
@@ -218,11 +236,7 @@ def main():
     setup_init(args.system.seed)
 
     # Create output folder name
-    args.folder = f'Dataset_{args.data.dataset}_Task_{args.task}_FewRatio_{args.training.few_ratio}_{args.model.size}_{args.experiment.note}/'
-    args.folder = f'Train_{args.folder}'
-
-    if args.training.mask_strategy_random != 'batch':
-        args.folder = f'{args.training.mask_strategy}_{args.training.mask_ratio}_{args.folder}'
+    args.folder = f'{args.experiment.name}/'
 
     # Create output directories
     model_path = os.path.join(args.paths.output_dir, args.folder)
@@ -234,11 +248,6 @@ def main():
 
     # Save active config to output directory for reproducibility
     save_config(args.to_dict(), os.path.join(model_path, 'config.yaml'))
-
-    # Initialize DataModule
-    logger.info("Initializing DataModule...")
-    data_module = create_wifo_data_module(args)
-    data_module.setup(stage='fit')
 
     # Initialize Lightning Module
     logger.info("Initializing WiFo Lightning Module...")
@@ -254,22 +263,24 @@ def main():
     if args.paths.checkpoint_path:
         # Check if it's a Lightning checkpoint (.ckpt) or legacy pickle (.pkl)
         if args.paths.checkpoint_path.endswith('.ckpt'):
-            # Lightning checkpoint
+            # Lightning checkpoint - load state dict manually
             logger.info(f"Loading Lightning checkpoint from: {args.paths.checkpoint_path}")
-            model = WiFoLightningModule.load_from_checkpoint(
-                args.paths.checkpoint_path,
-                args=args,
-                map_location='cpu'
-            )
+            checkpoint = torch.load(args.paths.checkpoint_path, map_location='cpu', weights_only=False)
+            state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+            model.load_state_dict(state_dict, strict=False)
         elif args.paths.checkpoint_path or args.file_load_path:
             # Legacy pickle
             ckpt_path = args.paths.checkpoint_path or f"{args.file_load_path}.pkl"
-            if os.path.exists(ckt_path):
+            if os.path.exists(ckpt_path):
                 state_dict = torch.load(ckpt_path, map_location='cpu', weights_only=True)
                 model.model.load_state_dict(state_dict, strict=False)
                 logger.info(f"Loaded legacy weights from {ckpt_path}")
             else:
                 logger.warning(f"Checkpoint not found: {ckpt_path}")
+
+    # Initialize DataModule
+    logger.info("Initializing DataModule...")
+    data_module = create_wifo_data_module(args)
 
     # Create TensorBoard logger
     log_dir = os.path.join(args.paths.log_dir, args.folder)
@@ -288,7 +299,7 @@ def main():
     trainer = L.Trainer(
         max_epochs=args.trainer.max_epochs,
         accelerator=args.trainer.accelerator,
-        devices=args.trainer.devices if args.trainer.devices != 'auto' else 'auto',
+        devices=int(args.trainer.devices) if args.trainer.devices != 'auto' else 1,
         precision=args.trainer.precision,
         callbacks=callbacks,
         logger=tensorboard_logger,

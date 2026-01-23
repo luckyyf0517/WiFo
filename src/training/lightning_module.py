@@ -38,6 +38,14 @@ from models.model import WiFo_model
 logger = logging.getLogger(__name__)
 
 
+# For backward compatibility with old checkpoints
+class ArgsNamespace:
+    """Simple namespace to hold model configuration (for loading old checkpoints)."""
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
 class WiFoLightningModule(L.LightningModule):
     """
     PyTorch Lightning wrapper for WiFo Masked Autoencoder.
@@ -74,23 +82,51 @@ class WiFoLightningModule(L.LightningModule):
         'fre': [0.5],          # 50% frequency masking
     }
 
+    @staticmethod
+    def _get_attr(args, *path):
+        """
+        Safely get attribute from nested namespace.
+        NO DEFAULT VALUES - all parameters must come from config.
+
+        Args:
+            args: Configuration namespace
+            *path: Attribute path (e.g., 'training', 'mask_strategy')
+
+        Returns:
+            Attribute value
+
+        Raises:
+            AttributeError: If any attribute in the path is not found
+        """
+        current = args
+        for attr in path:
+            if not hasattr(current, attr):
+                raise AttributeError(
+                    f"Required config parameter '{'.'.join(path)}' not found. "
+                    f"Missing '{attr}' in path. Please check your configuration."
+                )
+            current = getattr(current, attr)
+        return current
+
     def __init__(self, args):
         super().__init__()
-        self.save_hyperparameters()
+        # Don't save hyperparameters to checkpoint - only save model weights
 
         # Store configuration
         self.args = args
-        self.lr = float(args.lr) if hasattr(args, 'lr') else 5e-4
-        self.min_lr = float(args.min_lr) if hasattr(args, 'min_lr') else 1e-5
-        self.weight_decay = float(args.weight_decay) if hasattr(args, 'weight_decay') else 0.05
-        self.max_epochs = int(args.lr_anneal_steps) if hasattr(args, 'lr_anneal_steps') else 200
-        self.warmup_epochs = int(args.warmup_steps) if hasattr(args, 'warmup_steps') else 5
-        self.clip_grad = float(args.clip_grad) if hasattr(args, 'clip_grad') else 0.05
 
-        # Masking configuration
-        self.mask_strategy_random = getattr(args, 'mask_strategy_random', 'batch')
-        self.mask_strategy = getattr(args, 'mask_strategy', 'random')
-        self.mask_ratio = float(args.mask_ratio) if hasattr(args, 'mask_ratio') else 0.5
+        # Training hyperparameters - MUST come from config, no defaults
+        self.lr = float(self._get_attr(args, 'training', 'optimizer', 'lr'))
+        self.min_lr = float(self._get_attr(args, 'training', 'optimizer', 'min_lr'))
+        self.weight_decay = float(self._get_attr(args, 'training', 'optimizer', 'weight_decay'))
+        self.max_epochs = int(self._get_attr(args, 'training', 'scheduler', 'total_epochs'))
+        self.warmup_epochs = int(self._get_attr(args, 'training', 'scheduler', 'warmup_epochs'))
+        self.clip_grad = float(self._get_attr(args, 'training', 'gradient_clip'))
+
+        # Masking configuration - MUST come from config, no defaults
+        self.mask_strategy_random = self._get_attr(args, 'training', 'mask', 'strategy_mode')
+        self.mask_strategy = self._get_attr(args, 'training', 'mask', 'strategy')
+        self.mask_ratio = float(self._get_attr(args, 'training', 'mask', 'ratio'))
 
         # Initialize the WiFo model
         self.model = WiFo_model(args=args)
@@ -98,7 +134,7 @@ class WiFoLightningModule(L.LightningModule):
         # For tracking best validation NMSE
         self.best_val_nmse = float('inf')
 
-        logger.info(f"Initialized WiFo Lightning Module with size={args.size}")
+        logger.info(f"Initialized WiFo Lightning Module with size={args.model.size}")
         logger.info(f"Learning rate: {self.lr}, Min LR: {self.min_lr}, Warmup: {self.warmup_epochs} epochs")
         logger.info(f"Max epochs: {self.max_epochs}, Weight decay: {self.weight_decay}")
 
@@ -341,9 +377,9 @@ class WiFoLightningModule(L.LightningModule):
             torch.abs(y_target - y_pred) ** 2, dim=1
         ) / torch.sum(torch.abs(y_target) ** 2, dim=1)
 
-        # Log metrics
+        # Log metrics - single aggregated metric across all dataloaders
         self.log(
-            f'test/dataloader_{dataloader_idx}/nmse',
+            'test/nmse',
             nmse_per_sample.mean(),
             on_step=False,
             on_epoch=True,
