@@ -25,7 +25,7 @@ import torch.nn as nn
 from torch.optim import AdamW
 import lightning as L
 
-from model import WiFo_model
+from models.model import WiFo_model
 
 logger = logging.getLogger(__name__)
 

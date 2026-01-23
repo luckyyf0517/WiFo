@@ -1,166 +1,316 @@
 # coding=utf-8
-import torch
-from torch.optim import AdamW, SGD, Adam
+"""
+PyTorch Lightning Training Entry Point for WiFo (Wireless Foundation Model)
+
+This script provides the main entry point for training the WiFo model using
+PyTorch Lightning framework, following the specifications from the paper:
+"Liu et al., WiFo: wireless foundation model for channel prediction,
+SCIENCE CHINA Information Sciences, 2025"
+
+Usage:
+    python src/train.py --dataset DS1 --size base --epochs 200
+    or
+    python -m src.train --dataset DS1 --size base --epochs 200
+
+Hyperparameters from the paper:
+- Optimizer: AdamW with betas=(0.9, 0.999), weight_decay=0.05
+- Base Learning Rate: 5e-4
+- Min Learning Rate: 1e-5
+- Batch Size: 128
+- Total Epochs: 200
+- Warmup Epochs: 5
+- LR Schedule: Cosine decay
+- Masking Ratios: Random=85%, Temporal=50%, Frequency=50%
+"""
+
+import argparse
+import os
+import sys
 import random
-import numpy as np
-from sklearn.metrics import mean_squared_error,mean_absolute_error
-import math
-import time
-import collections
 import logging
+from typing import Optional
+
+# Add src directory to path to allow imports when running from project root
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+import torch
+import numpy as np
+import setproctitle
+import lightning as L
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from lightning.pytorch.loggers import TensorBoardLogger
+
+from training.lightning_module import WiFoLightningModule, create_wifo_lightning_module
+from data.data_module import WiFoDataModule, create_wifo_data_module
 
 logger = logging.getLogger(__name__)
 
 
-class TrainLoop:
-    def __init__(self, args, writer, model, test_data, device, early_stop = 5):
-        self.args = args
-        self.writer = writer
-        self.model = model
-        self.test_data = test_data
-        self.device = device
-        self.lr_anneal_steps = args.lr_anneal_steps
-        self.lr = args.lr
-        self.weight_decay = args.weight_decay
-        self.opt = AdamW([p for p in self.model.parameters() if p.requires_grad==True], lr=args.lr, weight_decay=args.weight_decay)
-        self.log_interval = args.log_interval
-        self.best_nmse_random = 1e9
-        self.warmup_steps=5
-        self.min_lr = args.min_lr
-        self.best_nmse = 1e9
-        self.early_stop = early_stop
-        
-        self.mask_list = {'random':[0.85],'temporal':[0.5], 'fre':[0.5]}
+def setup_logging() -> logging.Logger:
+    """Setup logging configuration."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    return logging.getLogger(__name__)
 
 
-    def Sample(self, test_data, step, mask_ratio, mask_strategy, seed=None, dataset='', index=0):
-        with torch.no_grad():
-            error_nmse = 0
-            num=0
-            # start time
-            for _, batch in enumerate(test_data[index]):
+def setup_init(seed: int = 100) -> None:
+    """
+    Initialize random seeds for reproducibility.
 
-                loss, _, pred, target, mask = self.model_forward(batch, self.model, mask_ratio, mask_strategy, seed=seed, data = dataset, mode='forward')
-
-
-                dim1 = pred.shape[0]
-                pred_mask = pred.squeeze(dim=2)  # [N,240,32]
-                target_mask = target.squeeze(dim=2)
-
-
-                y_pred = pred_mask[mask==1].reshape(-1,1).reshape(dim1,-1).detach().cpu().numpy()  # [Batch_size, 样本点数目]
-                y_target = target_mask[mask==1].reshape(-1,1).reshape(dim1,-1).detach().cpu().numpy()
-
-                error_nmse += np.sum(np.mean(np.abs(y_target - y_pred) ** 2, axis=1) / np.mean(np.abs(y_target) ** 2, axis=1))
-                num += y_pred.shape[0]  # 本轮mask的个数: 1000*576*0.5
-
-        nmse = error_nmse / num
-
-        return nmse
+    Args:
+        seed: Random seed value (default: 100)
+    """
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    logger.info(f"Set random seed to {seed}")
 
 
-    def Evaluation(self, test_data, epoch, seed=None):
+def create_argparser() -> argparse.ArgumentParser:
+    """
+    Create argument parser with all configuration options.
 
+    Returns:
+        Configured ArgumentParser
+    """
+    defaults = dict(
+        # Experimental settings
+        note='',
+        task='short',
+        file_load_path='',
+        dataset='DS1',
+        data_path='dataset/',
+        process_name='wifo_lightning',
+        his_len=6,
+        pred_len=6,
+        few_ratio=0.5,
+        stage=0,
 
-        nmse_list = []
-        nmse_key_result = {}
+        # Model settings
+        mask_ratio=0.5,
+        patch_size=4,
+        t_patch_size=2,
+        size='base',
+        no_qkv_bias=0,
+        pos_emb='SinCos',
+        conv_num=3,
 
-        for index, dataset_name in enumerate(self.args.dataset.split('*')):
+        # Pretrain settings
+        random=True,
+        mask_strategy='random',
+        mask_strategy_random='batch',  # 'none' or 'batch'
 
-            nmse_key_result[dataset_name] = {}
+        # Training hyperparameters (from paper)
+        lr=5e-4,  # Base learning rate from paper
+        min_lr=1e-5,  # Minimum learning rate from paper
+        early_stop=5,
+        weight_decay=0.05,  # Weight decay from paper
+        batch_size=128,  # Batch size from paper
+        log_interval=5,
+        total_epoches=200,  # Total epochs from paper
+        warmup_steps=5,  # Warmup epochs from paper
+        device_id='0',
+        machine='localhost',
+        clip_grad=0.05,  # Gradient clipping from paper
+        lr_anneal_steps=200,  # LR scheduler steps from paper
 
-            if self.args.mask_strategy_random != 'none':
-                mask_list = self.mask_list_chosen(dataset_name)  # 自定义mask_list
-                for s in mask_list:
-                    for m in self.mask_list[s]:
-                        nmse = self.Sample(test_data, epoch, mask_ratio=m, mask_strategy = s, seed=seed, dataset = dataset_name, index=index)
-                        nmse_list.append(nmse)
-                        if s not in nmse_key_result[dataset_name]:
-                            nmse_key_result[dataset_name][s] = {}
-                        nmse_key_result[dataset_name][s][m] = nmse
-                        
+        # Lightning-specific settings
+        num_workers=32,
+        pin_memory=True,
+        prefetch_factor=4,
+        precision='32-true',
+        accelerator='auto',
+        devices='auto',
+        max_epochs=200,  # From paper
+        check_val_every_n_epoch=1,
+        log_every_n_steps=10,
 
-                        self.writer.add_scalar('Test_NMSE/{}-{}-{}'.format(dataset_name.split('_C')[0], s, m), nmse, epoch)
+        # Paths
+        output_dir='./experiments',
+        log_dir='./logs',
+    )
 
-            else:
-                s = self.args.mask_strategy
-                m = self.args.mask_ratio
-                nmse = self.Sample(test_data, epoch, mask_ratio=m, mask_strategy = s, seed=seed, dataset = dataset_name, index=index)
-                nmse_list.append(nmse)
-                if s not in nmse_key_result[dataset_name]:
-                    nmse_key_result[dataset_name][s] = {}
-                nmse_key_result[dataset_name][s][m] = {'nmse':nmse}
+    parser = argparse.ArgumentParser(description='WiFo Training with PyTorch Lightning')
 
-
-                self.writer.add_scalar('Test_NMSE/Stage-{}-{}-{}-{}'.format(self.args.stage, dataset_name.split('_C')[0], s, m), nmse, epoch)
-
-        
-        loss_test = np.mean(nmse_list)
-
-        is_break = self.best_model_save(epoch, loss_test, nmse_key_result)
-        return is_break  # 输出的是“save”
-
-    def best_model_save(self, step, nmse, nmse_key_result):
-
-        self.early_stop = 0
-        torch.save(self.model.state_dict(), self.args.model_path+'model_save/model_best_stage_{}.pkl'.format(self.args.stage))
-        torch.save(self.model.state_dict(), self.args.model_path+'model_save/model_best.pkl')
-        self.best_nmse = nmse
-        self.writer.add_scalar('Evaluation/NMSE_best', self.best_nmse, step)
-        logger.info(f'NMSE_best: {self.best_nmse:.6f}')
-
-        # Format results nicely
-        logger.info('=' * 80)
-        logger.info('Results per dataset:')
-        for dataset, strategies in nmse_key_result.items():
-            for strategy, ratios in strategies.items():
-                for ratio, value in ratios.items():
-                    if isinstance(value, dict) and 'nmse' in value:
-                        logger.info(f'  {dataset:6s} | {strategy:10s} | ratio={ratio:.2f} | NMSE={value["nmse"]:.6f}')
-                    else:
-                        logger.info(f'  {dataset:6s} | {strategy:10s} | ratio={ratio:.2f} | NMSE={value:.6f}')
-        logger.info('=' * 80)
-
-        with open(self.args.model_path+'result.txt', 'w') as f:
-            f.write('stage:{}, epoch:{}, best nmse: {}\n'.format(self.args.stage, step, self.best_nmse))
-            f.write(str(nmse_key_result) + '\n')
-        with open(self.args.model_path+'result_all.txt', 'a') as f:
-            f.write('stage:{}, epoch:{}, best nmse: {}\n'.format(self.args.stage, step, self.best_nmse))
-            f.write(str(nmse_key_result) + '\n')
-        return 'save'
-
-    def mask_select(self,name):
-        if self.args.mask_strategy_random == 'none': #'none' or 'batch'
-            mask_strategy = self.args.mask_strategy
-            mask_ratio = self.args.mask_ratio
+    # Add all arguments
+    for key, value in defaults.items():
+        if isinstance(value, bool):
+            parser.add_argument(f'--{key}', action='store_true' if not value else 'store_false',
+                             default=value)
         else:
-            mask_strategy = random.choice(['random','temporal','fre'])
-            mask_ratio = random.choice(self.mask_list[mask_strategy])
+            parser.add_argument(f'--{key}', type=type(value), default=value)
 
-        return mask_strategy, mask_ratio
+    return parser
 
 
-    def mask_list_chosen(self,name):
-        if self.args.mask_strategy_random == 'none': #'none' or 'batch'
-            mask_list = self.mask_list
+def create_callbacks(args) -> list:
+    """
+    Create PyTorch Lightning callbacks.
+
+    Args:
+        args: Configuration namespace
+
+    Returns:
+        List of callbacks
+    """
+    callbacks = []
+
+    # Model checkpoint - save best model based on validation NMSE
+    checkpoint_callback = ModelCheckpoint(
+        monitor='val/nmse',
+        filename='best-{epoch:02d}-{val/nmse:.6f}',
+        save_top_k=1,
+        mode='min',
+        save_last=True,
+        dirpath=os.path.join(args.output_dir, args.folder, 'checkpoints')
+    )
+    callbacks.append(checkpoint_callback)
+
+    # Learning rate monitoring
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    callbacks.append(lr_monitor)
+
+    # Early stopping (optional, disabled by default as paper trains for fixed epochs)
+    if args.early_stop > 0:
+        early_stop = EarlyStopping(
+            monitor='val/nmse',
+            patience=args.early_stop,
+            mode='min',
+            verbose=True
+        )
+        callbacks.append(early_stop)
+
+    logger.info(f"Created {len(callbacks)} callbacks")
+    return callbacks
+
+
+def main():
+    """Main training function."""
+    logger = setup_logging()
+    parser = create_argparser()
+    args = parser.parse_args()
+
+    # Set process title
+    setproctitle.setproctitle(f"{args.process_name}-{args.device_id}")
+
+    # Initialize random seeds
+    setup_init(100)
+
+    # Create output folder name
+    args.folder = f'Dataset_{args.dataset}_Task_{args.task}_FewRatio_{args.few_ratio}_{args.size}_{args.note}/'
+    args.folder = f'Train_{args.folder}'
+
+    if args.mask_strategy_random != 'batch':
+        args.folder = f'{args.mask_strategy}_{args.mask_ratio}_{args.folder}'
+
+    # Create output directories
+    model_path = os.path.join(args.output_dir, args.folder)
+    checkpoint_dir = os.path.join(model_path, 'checkpoints')
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    logger.info(f"Output directory: {model_path}")
+    logger.info(f"Checkpoint directory: {checkpoint_dir}")
+
+    # Initialize DataModule
+    logger.info("Initializing DataModule...")
+    data_module = create_wifo_data_module(args)
+    data_module.setup(stage='fit')
+
+    # Initialize Lightning Module
+    logger.info("Initializing WiFo Lightning Module...")
+    model = create_wifo_lightning_module(args)
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Total parameters: {total_params:,}")
+    logger.info(f"Trainable parameters: {trainable_params:,}")
+
+    # Load pretrained weights if specified
+    if args.file_load_path:
+        checkpoint_path = f"{args.file_load_path}.pkl"
+        if os.path.exists(checkpoint_path):
+            state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+            model.model.load_state_dict(state_dict, strict=False)
+            logger.info(f"Loaded pretrained model from {checkpoint_path}")
         else:
-            mask_list = {key: self.mask_list[key] for key in ['random','temporal','fre']}
-        return mask_list
+            logger.warning(f"Pretrained model not found: {checkpoint_path}")
 
-    def run_loop(self):
+    # Create TensorBoard logger
+    log_dir = os.path.join(args.log_dir, args.folder)
+    tensorboard_logger = TensorBoardLogger(
+        save_dir=log_dir,
+        name=None,
+        version=None,
+        log_graph=False
+    )
+    logger.info(f"TensorBoard logs: {log_dir}")
 
-        self.Evaluation(self.test_data, 0)
+    # Create callbacks
+    callbacks = create_callbacks(args)
 
-    def model_forward(self, batch, model, mask_ratio, mask_strategy, seed=None, data=None, mode='backward'):
+    # Initialize Trainer with paper hyperparameters
+    trainer = L.Trainer(
+        max_epochs=args.max_epochs,
+        accelerator=args.accelerator,
+        devices=args.devices if args.devices != 'auto' else 'auto',
+        precision=args.precision,
+        callbacks=callbacks,
+        logger=tensorboard_logger,
+        log_every_n_steps=args.log_every_n_steps,
+        check_val_every_n_epoch=args.check_val_every_n_epoch,
+        deterministic=True,
+        gradient_clip_val=args.clip_grad,
+        gradient_clip_algorithm='norm',
+        enable_model_summary=True,
+        enable_progress_bar=True,
+        enable_checkpointing=True,
+    )
 
-        batch = [i.to(self.device) for i in batch]
+    logger.info("Starting training...")
+    logger.info(f"Hyperparameters: lr={args.lr}, batch_size={args.batch_size}, "
+               f"epochs={args.max_epochs}, weight_decay={args.weight_decay}")
 
-        loss, loss2, pred, target, mask = self.model(
-                batch,
-                mask_ratio=mask_ratio,
-                mask_strategy = mask_strategy, 
-                seed = seed, 
-                data = data,
-            )
-        return loss, loss2, pred, target, mask
+    # Train the model
+    trainer.fit(model, datamodule=data_module)
 
+    # Log final results
+    logger.info("Training completed!")
+    logger.info(f"Best validation NMSE: {model.best_val_nmse:.6f}")
+
+    # Save final model
+    final_model_path = os.path.join(model_path, 'model_final.ckpt')
+    trainer.save_checkpoint(final_model_path)
+    logger.info(f"Saved final model to {final_model_path}")
+
+    # Run evaluation on test set if available
+    try:
+        logger.info("Running test evaluation...")
+        test_results = trainer.test(model, datamodule=data_module, ckpt_path='best')
+        logger.info(f"Test results: {test_results}")
+    except Exception as e:
+        logger.warning(f"Test evaluation failed: {e}")
+
+    # Save results to file
+    result_file = os.path.join(model_path, 'result.txt')
+    with open(result_file, 'w') as f:
+        f.write(f"Stage: {args.stage}\n")
+        f.write(f"Epoch: {trainer.current_epoch}\n")
+        f.write(f"Best validation NMSE: {model.best_val_nmse:.6f}\n")
+        f.write(f"Total parameters: {total_params:,}\n")
+        f.write(f"Trainable parameters: {trainable_params:,}\n")
+
+    logger.info(f"Results saved to {result_file}")
+
+
+if __name__ == "__main__":
+    main()

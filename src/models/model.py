@@ -9,9 +9,9 @@ from timm.models.layers import to_2tuple
 from timm.models.vision_transformer import DropPath, Mlp
 from einops import rearrange
 
-from embed import DataEmbedding, get_2d_sincos_pos_embed, get_1d_sincos_pos_embed_from_grid, get_1d_sincos_pos_embed_from_grid_with_resolution
+from .embed import DataEmbedding, get_2d_sincos_pos_embed, get_1d_sincos_pos_embed_from_grid, get_1d_sincos_pos_embed_from_grid_with_resolution
 
-from mask_strategy import *
+from ..utils.mask_strategy import *
 import copy
 import time
 from scipy import interpolate
