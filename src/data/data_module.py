@@ -21,7 +21,7 @@ Data files:
 import os
 import logging
 from typing import Optional, List, Tuple
-from tqdm import tqdm
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 import torch
 import numpy as np
@@ -153,18 +153,31 @@ class WiFoDataModule(L.LightningDataModule):
         self.val_datasets.clear()
         self.test_datasets.clear()
 
-        for dataset_name in self.dataset_names:
-            # Load data for this dataset based on stage
-            train_data, val_data, test_data = self._load_single_dataset(dataset_name, stage)
+        # Use Rich progress bar for loading datasets
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            expand=False
+        ) as progress:
+            task = progress.add_task(f"Loading datasets ({stage})", total=len(self.dataset_names))
 
-            # Only append non-empty datasets based on stage
-            if stage == 'test' or stage == 'predict':
-                self.test_datasets.append(test_data)
-            elif stage == 'validate':
-                self.val_datasets.append(val_data)
-            else:  # 'fit' or None - load train and val only
-                self.train_datasets.append(train_data)
-                self.val_datasets.append(val_data)
+            for dataset_name in self.dataset_names:
+                # Load data for this dataset based on stage
+                train_data, val_data, test_data = self._load_single_dataset(dataset_name, stage)
+
+                # Only append non-empty datasets based on stage
+                if stage == 'test' or stage == 'predict':
+                    self.test_datasets.append(test_data)
+                elif stage == 'validate':
+                    self.val_datasets.append(val_data)
+                else:  # 'fit' or None - load train and val only
+                    self.train_datasets.append(train_data)
+                    self.val_datasets.append(val_data)
+
+                progress.update(task, advance=1)
 
         # Log summary (single line)
         train_count = sum(len(d) for d in self.train_datasets)
@@ -217,9 +230,9 @@ class WiFoDataModule(L.LightningDataModule):
         else:  # 'fit' or None
             splits_to_load = [('train', train_path), ('val', val_path)]
 
-        # Load each split with progress bar (auto-clear after completion)
+        # Load each split
         split_data = {}
-        for split_name, split_path in tqdm(splits_to_load, desc=f"  Loading {dataset_name}", unit="file", ncols=100, leave=False):
+        for split_name, split_path in splits_to_load:
             if os.path.exists(split_path):
                 try:
                     mat_data = hdf5storage.loadmat(split_path)

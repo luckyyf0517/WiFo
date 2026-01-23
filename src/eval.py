@@ -29,7 +29,6 @@ import sys
 import random
 import logging
 from typing import Optional
-from tqdm import tqdm
 
 # Add src directory to path to allow imports when running from project root
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -231,7 +230,7 @@ def main():
 
     logger.info(f"Evaluating: {args.training.mask_strategy} masking, ratio={args.training.mask_ratio}")
 
-    # Initialize Lightning Trainer for testing
+    # Initialize Lightning Trainer for testing (default Rich progress bar)
     trainer = L.Trainer(
         accelerator=args.trainer.accelerator,
         devices=int(args.trainer.devices) if args.trainer.devices != 'auto' else 1,
@@ -247,6 +246,20 @@ def main():
     # Get all test metrics from callback (includes per-dataloader metrics)
     metrics = trainer.callback_metrics
 
+    # Collect all per-dataloader NMSE values and calculate average
+    nmse_values = []
+    for key, value in metrics.items():
+        if key.startswith('test/dataloader_') and 'nmse' in key:
+            nmse_values.append(value.item())
+
+    # Calculate overall average across all dataloaders
+    if nmse_values:
+        avg_nmse = np.mean(nmse_values)
+        # Print overall average
+        print(f"\n{'─' * 50}")
+        print(f"{'Average NMSE across all datasets':<35} {avg_nmse:>10.3f}")
+        print(f"{'─' * 50}")
+
     # Save results to file
     result_file = os.path.join(model_path, 'result.txt')
     with open(result_file, 'w') as f:
@@ -259,6 +272,9 @@ def main():
         for key, value in sorted(metrics.items()):
             if key.startswith('test/'):
                 f.write(f"{key}: {value.item():.6f}\n")
+        # Write overall average
+        if nmse_values:
+            f.write(f"\nAverage NMSE: {avg_nmse:.6f}\n")
 
     logger.info(f"Results saved to {result_file}")
 
