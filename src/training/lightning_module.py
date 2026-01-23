@@ -22,6 +22,7 @@ import logging
 from typing import Optional, Tuple, List
 from functools import partial
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -245,13 +246,10 @@ class WiFoLightningModule(L.LightningModule):
         strategy, mask_ratio = self._select_masking_strategy()
 
         # Move batch to device and convert to list format expected by model
-        # The DataLoader returns tensor[B, 1, 2, T, K, N] due to unsqueeze(0) in Dataset
-        # We need to convert it to a list of [1, 2, T, K, N] tensors
         if isinstance(batch, (list, tuple)):
             imgs = [x.to(self.device) for x in batch]
         else:
             batch = batch.to(self.device)
-            # Handle different batch shapes
             if batch.ndim == 6 and batch.shape[1] == 1:  # [B, 1, 2, T, K, N]
                 imgs = [batch[i].squeeze(1) for i in range(batch.shape[0])]
             elif batch.ndim == 5:  # [B, 2, T, K, N]
@@ -260,7 +258,6 @@ class WiFoLightningModule(L.LightningModule):
                 imgs = [batch]
 
         # Forward pass through model
-        # Note: The model adds 20 dB SNR noise internally (see model.py line 666-669)
         loss, loss2, pred, target, mask = self.model(
             imgs,
             mask_ratio=mask_ratio,
@@ -305,7 +302,6 @@ class WiFoLightningModule(L.LightningModule):
                 imgs = [batch]
 
         # Forward pass
-        # Note: The model adds 20 dB SNR noise internally
         loss, loss2, pred, target, mask = self.model(
             imgs,
             mask_ratio=mask_ratio,
@@ -315,7 +311,6 @@ class WiFoLightningModule(L.LightningModule):
         )
 
         # Compute NMSE on masked patches
-        # loss is MSE on masked patches, convert to NMSE
         target_power = torch.mean(target.abs() ** 2)
         nmse = loss / (target_power + 1e-10)
 
@@ -354,7 +349,6 @@ class WiFoLightningModule(L.LightningModule):
                 imgs = [batch]
 
         # Forward pass
-        # Note: The model adds 20 dB SNR noise internally
         loss, loss2, pred, target, mask = self.model(
             imgs,
             mask_ratio=mask_ratio,
@@ -364,18 +358,31 @@ class WiFoLightningModule(L.LightningModule):
         )
 
         # Compute NMSE on masked patches
-        batch_size = pred.shape[0]
-        pred_mask = pred.squeeze(dim=2)
-        target_mask = target.squeeze(dim=2)
+        # pred and target are complex tensors: [N, L, C]
+        # mask is [N, L] where 1 means masked
+        dim1 = pred.shape[0]  # batch size
+
+        # Handle complex tensors
+        pred_real = torch.stack([pred.real, pred.imag], dim=2)  # [N, L, 2, C]
+        target_real = torch.stack([target.real, target.imag], dim=2)
+
+        pred_mask = pred_real.squeeze(dim=2)  # [N, L, 2, C]
+        target_mask = target_real.squeeze(dim=2)
 
         # Extract masked patches
-        y_pred = pred_mask[mask == 1].reshape(batch_size, -1)
-        y_target = target_mask[mask == 1].reshape(batch_size, -1)
+        if len(pred_mask.shape) == 3:
+            mask_expanded = mask.unsqueeze(-1).expand_as(pred_mask)
+            y_pred = pred_mask[mask_expanded == 1].reshape(dim1, -1)
+            y_target = target_mask[mask_expanded == 1].reshape(dim1, -1)
+        else:
+            y_pred = pred_mask[mask == 1].reshape(dim1, -1)
+            y_target = target_mask[mask == 1].reshape(dim1, -1)
 
         # Compute NMSE per sample
-        nmse_per_sample = torch.sum(
-            torch.abs(y_target - y_pred) ** 2, dim=1
-        ) / torch.sum(torch.abs(y_target) ** 2, dim=1)
+        y_pred_np = y_pred.detach().cpu().numpy()
+        y_target_np = y_target.detach().cpu().numpy()
+        nmse_per_sample = np.mean(np.abs(y_target_np - y_pred_np) ** 2, axis=1) / np.mean(np.abs(y_target_np) ** 2, axis=1)
+        nmse_per_sample = torch.tensor(nmse_per_sample, device=self.device)
 
         # Log metrics - single aggregated metric across all dataloaders
         self.log(
@@ -383,7 +390,7 @@ class WiFoLightningModule(L.LightningModule):
             nmse_per_sample.mean(),
             on_step=False,
             on_epoch=True,
-            batch_size=batch_size
+            batch_size=dim1
         )
 
         return {

@@ -61,6 +61,8 @@ def setup_logging() -> logging.Logger:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    # Suppress Lightning's dataloader verbose logs
+    logging.getLogger('lightning.pytorch.utilities.rank_zero').setLevel(logging.WARNING)
     return logging.getLogger(__name__)
 
 
@@ -214,7 +216,6 @@ def create_callbacks(args) -> list:
         )
         callbacks.append(early_stop)
 
-    logger.info(f"Created {len(callbacks)} callbacks")
     return callbacks
 
 
@@ -279,7 +280,6 @@ def main():
                 logger.warning(f"Checkpoint not found: {ckpt_path}")
 
     # Initialize DataModule
-    logger.info("Initializing DataModule...")
     data_module = create_wifo_data_module(args)
 
     # Create TensorBoard logger
@@ -290,7 +290,6 @@ def main():
         version=None,
         log_graph=False
     )
-    logger.info(f"TensorBoard logs: {log_dir}")
 
     # Create callbacks
     callbacks = create_callbacks(args)

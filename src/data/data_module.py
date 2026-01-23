@@ -153,9 +153,6 @@ class WiFoDataModule(L.LightningDataModule):
         self.val_datasets.clear()
         self.test_datasets.clear()
 
-        if stage == 'predict' or stage is None:
-            logger.info("Setting up data...")
-
         for dataset_name in self.dataset_names:
             # Load data for this dataset based on stage
             train_data, val_data, test_data = self._load_single_dataset(dataset_name, stage)
@@ -169,17 +166,21 @@ class WiFoDataModule(L.LightningDataModule):
                 self.train_datasets.append(train_data)
                 self.val_datasets.append(val_data)
 
-        # Log summary
+        # Log summary (single line)
         train_count = sum(len(d) for d in self.train_datasets)
         val_count = sum(len(d) for d in self.val_datasets)
         test_count = sum(len(d) for d in self.test_datasets)
 
+        parts = []
         if train_count > 0:
-            logger.info(f"Train samples: {train_count}")
+            parts.append(f"train={train_count}")
         if val_count > 0:
-            logger.info(f"Val samples: {val_count}")
+            parts.append(f"val={val_count}")
         if test_count > 0:
-            logger.info(f"Test samples: {test_count}")
+            parts.append(f"test={test_count}")
+
+        if parts:
+            logger.info("Data: " + ", ".join(parts))
 
     def _load_single_dataset(self, dataset_name: str, stage: Optional[str] = None) -> Tuple[CSIDataset, CSIDataset, CSIDataset]:
         """
@@ -216,9 +217,9 @@ class WiFoDataModule(L.LightningDataModule):
         else:  # 'fit' or None
             splits_to_load = [('train', train_path), ('val', val_path)]
 
-        # Load each split with progress bar
+        # Load each split with progress bar (auto-clear after completion)
         split_data = {}
-        for split_name, split_path in tqdm(splits_to_load, desc=f"  {dataset_name}", unit="file", ncols=80):
+        for split_name, split_path in tqdm(splits_to_load, desc=f"  Loading {dataset_name}", unit="file", ncols=100, leave=False):
             if os.path.exists(split_path):
                 try:
                     mat_data = hdf5storage.loadmat(split_path)
@@ -251,12 +252,6 @@ class WiFoDataModule(L.LightningDataModule):
         if train_data is None and val_data is None and test_data is None:
             raise FileNotFoundError(f"No data files found for dataset {dataset_name}")
 
-        # Log dataset sizes
-        train_size = train_data.shape[0] if train_data is not None else 0
-        val_size = val_data.shape[0] if val_data is not None else 0
-        test_size = test_data.shape[0] if test_data is not None else 0
-        logger.info(f"Dataset {dataset_name}: train={train_size}, val={val_size}, test={test_size}")
-
         # Normalize each split independently and create datasets
         train_dataset = self._normalize_and_create_dataset(train_data, dataset_name, 'train') if train_data is not None else CSIDataset(torch.empty(0, 2, 1, 1, 1))
         val_dataset = self._normalize_and_create_dataset(val_data, dataset_name, 'val') if val_data is not None else CSIDataset(torch.empty(0, 2, 1, 1, 1))
@@ -266,7 +261,10 @@ class WiFoDataModule(L.LightningDataModule):
 
     def _normalize_and_create_dataset(self, data: torch.Tensor, dataset_name: str, split: str) -> CSIDataset:
         """
-        Normalize data and create CSIDataset.
+        Create CSIDataset WITHOUT normalization (model expects raw data).
+
+        The WiFo model was trained on raw data without normalization,
+        so we use the data as-is for consistency with the original implementation.
 
         Args:
             data: Input tensor [N, 2, T, H, W]
@@ -274,20 +272,16 @@ class WiFoDataModule(L.LightningDataModule):
             split: Split name ('train', 'val', 'test')
 
         Returns:
-            CSIDataset with normalized data
+            CSIDataset with raw (unnormalized) data
         """
-        # Compute statistics
+        # No normalization - use raw data as the model expects
+        # Store statistics for reference only (not used)
         mean = data.mean(dim=(0, 2, 3, 4), keepdim=True)
         std = data.std(dim=(0, 2, 3, 4), keepdim=True) + 1e-8
-
-        # Normalize
-        normalized_data = (data - mean) / std
-
-        # Store statistics
         key = f"{dataset_name}_{split}"
         self.dataset_stats[key] = {'mean': mean, 'std': std}
 
-        return CSIDataset(normalized_data)
+        return CSIDataset(data)  # Return raw data, not normalized
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         """
@@ -313,9 +307,6 @@ class WiFoDataModule(L.LightningDataModule):
             prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
             drop_last=True
         )
-
-        logger.info(f"Train dataloader: {len(combined_data)} samples, "
-                   f"batch_size={self.batch_size}, {len(dataloader)} batches")
 
         return dataloader
 
@@ -362,7 +353,7 @@ class WiFoDataModule(L.LightningDataModule):
         """
         dataloaders = []
 
-        for i, dataset in enumerate(self.test_datasets):
+        for dataset in self.test_datasets:
             dataloader = DataLoader(
                 dataset,
                 batch_size=self.batch_size,
@@ -372,7 +363,6 @@ class WiFoDataModule(L.LightningDataModule):
                 prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None
             )
             dataloaders.append(dataloader)
-            logger.info(f"Test dataloader {i}: {len(dataset)} samples, {len(dataloader)} batches")
 
         return dataloaders
 

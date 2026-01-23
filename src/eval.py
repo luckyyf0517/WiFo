@@ -55,6 +55,8 @@ def setup_logging() -> logging.Logger:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    # Suppress Lightning's dataloader verbose logs
+    logging.getLogger('lightning.pytorch.utilities.rank_zero').setLevel(logging.WARNING)
     return logging.getLogger(__name__)
 
 
@@ -211,65 +213,54 @@ def main():
     # Initialize Lightning Module (will load weights from checkpoint)
     logger.info("Loading WiFo Lightning Module from checkpoint...")
 
-    # Load checkpoint manually to support simple state_dict format
+    # Load checkpoint
     checkpoint = torch.load(args.paths.checkpoint_path, map_location='cpu', weights_only=False)
     state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
 
-    # Create model and load state dict
-    model = create_wifo_lightning_module(args)
+    # Create Lightning Module and load weights
+    model = WiFoLightningModule(args)
     model.load_state_dict(state_dict, strict=False)
 
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"Total parameters: {total_params:,}")
-    logger.info(f"Trainable parameters: {trainable_params:,}")
+    logger.info(f"Model: {total_params / 1e6:.1f}M parameters")
 
     # Initialize DataModule
-    logger.info("Initializing DataModule...")
     data_module = create_wifo_data_module(args)
+    data_module.setup('test')
 
-    # Create Trainer for evaluation
+    logger.info(f"Evaluating: {args.training.mask_strategy} masking, ratio={args.training.mask_ratio}")
+
+    # Initialize Lightning Trainer for testing
     trainer = L.Trainer(
         accelerator=args.trainer.accelerator,
         devices=int(args.trainer.devices) if args.trainer.devices != 'auto' else 1,
         logger=False,
+        enable_checkpointing=False,
         enable_progress_bar=True,
         enable_model_summary=False,
-        enable_checkpointing=False,
     )
 
-    logger.info("Starting evaluation...")
-    logger.info(f"Evaluation strategy: {args.training.mask_strategy}")
-    logger.info(f"Mask ratio: {args.training.mask_ratio}")
-    logger.info(f"Few-shot ratio: {args.training.few_ratio}")
+    # Run test with verbose=True to show Lightning table (auto shows per-dataloader results)
+    trainer.test(model, data_module.test_dataloader(), verbose=True)
 
-    # Run evaluation
-    test_results = trainer.test(model, datamodule=data_module)
+    # Get all test metrics from callback (includes per-dataloader metrics)
+    metrics = trainer.callback_metrics
 
-    # Calculate average NMSE across all dataloaders
-    nmse_values = []
-    for key in test_results[0].keys():
-        if 'nmse' in key:
-            nmse_values.append(test_results[0][key])
+    # Save results to file
+    result_file = os.path.join(model_path, 'result.txt')
+    with open(result_file, 'w') as f:
+        f.write(f"Checkpoint: {args.paths.checkpoint_path}\n")
+        f.write(f"Strategy: {args.training.mask_strategy}\n")
+        f.write(f"Mask ratio: {args.training.mask_ratio}\n")
+        f.write(f"Few-shot ratio: {args.training.few_ratio}\n")
+        f.write(f"Datasets: {args.data.dataset}\n")
+        # Write all metrics
+        for key, value in sorted(metrics.items()):
+            if key.startswith('test/'):
+                f.write(f"{key}: {value.item():.6f}\n")
 
-    if nmse_values:
-        avg_nmse = np.mean(nmse_values)
-        logger.info("=" * 80)
-        logger.info(f"Average NMSE: {avg_nmse:.6f}")
-        logger.info("=" * 80)
-
-        # Save results to file
-        result_file = os.path.join(model_path, 'result.txt')
-        with open(result_file, 'w') as f:
-            f.write(f"Checkpoint: {args.paths.checkpoint_path}\n")
-            f.write(f"Strategy: {args.training.mask_strategy}\n")
-            f.write(f"Mask ratio: {args.training.mask_ratio}\n")
-            f.write(f"Few-shot ratio: {args.training.few_ratio}\n")
-            f.write(f"Datasets: {args.data.dataset}\n")
-            f.write(f"\nAverage NMSE: {avg_nmse:.6f}\n")
-
-        logger.info(f"Results saved to {result_file}")
+    logger.info(f"Results saved to {result_file}")
 
 
 if __name__ == "__main__":

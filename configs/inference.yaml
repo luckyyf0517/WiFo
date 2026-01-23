@@ -55,6 +55,7 @@ trainer:
 paths:
   output_dir: ./experiments
   log_dir: ./logs
+  checkpoint_path: weights/lightning/wifo_base.ckpt
 
 system:
   seed: 100

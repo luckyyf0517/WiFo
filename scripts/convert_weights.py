@@ -116,11 +116,18 @@ def convert_weights(input_path: str, output_path: str = None):
         logger.error(f"Failed to load legacy weights: {e}")
         sys.exit(1)
 
-    # Save as Lightning checkpoint (only state_dict)
+    # Add 'model.' prefix to all keys for WiFoLightningModule compatibility
+    logger.info("Adding 'model.' prefix to all keys for LightningModule compatibility...")
+    lightning_state_dict = {}
+    for k, v in legacy_state_dict.items():
+        lightning_state_dict[f'model.{k}'] = v
+    logger.info(f"Converted {len(lightning_state_dict)} parameter keys")
+
+    # Save as Lightning checkpoint
     logger.info("Saving Lightning checkpoint...")
     try:
         checkpoint = {
-            'state_dict': legacy_state_dict,
+            'state_dict': lightning_state_dict,
             'epoch': 0,
             'global_step': 0,
         }
