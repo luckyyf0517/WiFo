@@ -1,0 +1,94 @@
+# WiFo Zero-Shot Evaluation Configuration
+# This configuration is for zero-shot evaluation on unseen datasets
+
+# Experiment metadata
+experiment:
+  name: "zero_shot_evaluation"
+  note: "Zero-shot evaluation on test datasets"
+
+# Model architecture
+model:
+  size: "base"
+  patch_size: 4
+  t_patch_size: 4
+  pos_emb: "SinCos"
+  no_qkv_bias: 0
+  conv_num: 3
+
+# Training configuration (not used for eval, but needed for compatibility)
+training:
+  optimizer:
+    name: "adamw"
+    lr: 5e-4
+    min_lr: 1e-5
+    weight_decay: 0.05
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 5
+    total_epochs: 200
+
+  batch_size: 128
+  gradient_clip: 0.05
+  early_stop: 5
+
+  # Masking strategy for evaluation
+  mask:
+    strategy: "temporal"    # Use temporal masking for evaluation
+    strategy_mode: "none"   # Use single strategy
+    ratio: 0.5
+
+  lr: 5e-4
+  min_lr: 1e-5
+  weight_decay: 0.05
+  warmup_steps: 5
+  lr_anneal_steps: 200
+  clip_grad: 0.05
+
+# Data configuration
+data:
+  dataset: "D17*D18*D19"    # Test datasets not seen during training
+  data_path: "dataset/"
+  train_split: 9000
+  val_split: 1000
+  test_split: 2000
+  num_workers: 32
+  pin_memory: true
+  prefetch_factor: 4
+
+# Lightning trainer settings
+trainer:
+  accelerator: "auto"
+  devices: "auto"
+  precision: "32-true"
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 10
+
+# Paths
+paths:
+  output_dir: "./experiments"
+  log_dir: "./logs"
+  checkpoint_path: "weights/lightning/wifo_base.ckpt"  # Pre-trained weights
+
+# System settings
+system:
+  seed: 100
+  device_id: "0"
+  process_name: "wifo_eval"
+
+# Additional parameters
+note: "zero_shot"
+task: "short"
+file_load_path: ""
+his_len: 6
+pred_len: 6
+few_ratio: 0.0            # Zero-shot: 0% fine-tuning data
+stage: 0
+mask_ratio: 0.5
+mask_strategy: "temporal"
+mask_strategy_random: "none"
+log_interval: 5
+total_epoches: 200
+machine: "localhost"

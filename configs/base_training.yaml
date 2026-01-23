@@ -1,0 +1,98 @@
+# WiFo Base Training Configuration
+# This configuration reproduces the paper baseline for the base model
+
+# Experiment metadata
+experiment:
+  name: "paper_baseline"
+  note: "Reproduces paper results for base model with 3-task training"
+
+# Model architecture
+model:
+  size: "base"              # tiny, little, small, base
+  patch_size: 4
+  t_patch_size: 4          # Updated to match pre-trained weights
+  pos_emb: "SinCos"
+  no_qkv_bias: 0
+  conv_num: 3
+
+# Training configuration
+training:
+  # Optimizer settings from paper
+  optimizer:
+    name: "adamw"
+    lr: 5e-4                # Base learning rate from paper
+    min_lr: 1e-5             # Minimum learning rate from paper
+    weight_decay: 0.05      # Weight decay from paper
+    betas: [0.9, 0.999]
+
+  # Learning rate scheduler
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 5        # Warmup epochs from paper
+    total_epochs: 200       # Total epochs from paper
+
+  # Training loop settings
+  batch_size: 128          # Batch size from paper
+  gradient_clip: 0.05      # Gradient clipping from paper
+  early_stop: 5
+
+  # Masking strategies (3-task training)
+  mask:
+    strategy: "random"      # Default strategy (not used when strategy_mode=batch)
+    strategy_mode: "batch"   # Use all three strategies randomly per batch
+    ratio: 0.5              # Default ratio (not used when strategy_mode=batch)
+
+  # Additional training parameters (for backward compatibility)
+  lr: 5e-4
+  min_lr: 1e-5
+  weight_decay: 0.05
+  warmup_steps: 5
+  lr_anneal_steps: 200
+  clip_grad: 0.05
+
+# Data configuration
+data:
+  dataset: "D1*D2*D3*D4*D5*D6*D7*D8*D9*D10*D11*D12*D13*D14*D15*D16"  # All pre-training datasets
+  data_path: "dataset/"
+  train_split: 9000
+  val_split: 1000
+  test_split: 2000
+  num_workers: 32
+  pin_memory: true
+  prefetch_factor: 4
+
+# Lightning trainer settings
+trainer:
+  accelerator: "auto"
+  devices: "auto"
+  precision: "32-true"
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 10
+
+# Paths
+paths:
+  output_dir: "./experiments"
+  log_dir: "./logs"
+  checkpoint_path: ""      # Path to pre-trained weights if resuming
+
+# System settings
+system:
+  seed: 100
+  device_id: "0"
+  process_name: "wifo_training"
+
+# Additional flat parameters (for backward compatibility)
+note: ""
+task: "short"
+file_load_path: ""
+his_len: 6
+pred_len: 6
+few_ratio: 0.5
+stage: 0
+mask_ratio: 0.5
+mask_strategy: "random"
+mask_strategy_random: "batch"
+log_interval: 5
+total_epoches: 200
+machine: "localhost"

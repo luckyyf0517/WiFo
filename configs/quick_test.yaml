@@ -1,0 +1,95 @@
+# WiFo Quick Test Configuration
+# This configuration is for fast iteration during development
+
+# Experiment metadata
+experiment:
+  name: "quick_test"
+  note: "Fast iteration with tiny model and minimal epochs"
+
+# Model architecture
+model:
+  size: "tiny"              # Use smallest model for speed
+  patch_size: 4
+  t_patch_size: 2
+  pos_emb: "SinCos"
+  no_qkv_bias: 0
+  conv_num: 3
+
+# Training configuration
+training:
+  optimizer:
+    name: "adamw"
+    lr: 1e-3                # Higher LR for faster convergence
+    min_lr: 1e-6
+    weight_decay: 0.05
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 2
+    total_epochs: 10        # Minimal epochs for quick test
+
+  # Training loop settings
+  batch_size: 64           # Smaller batch size
+  gradient_clip: 0.05
+  early_stop: 3
+
+  # Masking strategies
+  mask:
+    strategy: "random"
+    strategy_mode: "batch"
+    ratio: 0.5
+
+  lr: 1e-3
+  min_lr: 1e-6
+  weight_decay: 0.05
+  warmup_steps: 2
+  lr_anneal_steps: 10
+  clip_grad: 0.05
+
+# Data configuration
+data:
+  dataset: "DS1"             # Single dataset for quick test
+  data_path: "dataset/"
+  train_split: 9000
+  val_split: 1000
+  test_split: 2000
+  num_workers: 4            # Fewer workers
+  pin_memory: true
+  prefetch_factor: 4
+
+# Lightning trainer settings
+trainer:
+  accelerator: "auto"
+  devices: "auto"
+  precision: "32-true"
+  max_epochs: 10
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 5
+
+# Paths
+paths:
+  output_dir: "./experiments"
+  log_dir: "./logs"
+  checkpoint_path: ""
+
+# System settings
+system:
+  seed: 100
+  device_id: "0"
+  process_name: "wifo_test"
+
+# Additional parameters
+note: "quick_test"
+task: "short"
+file_load_path: ""
+his_len: 6
+pred_len: 6
+few_ratio: 0.5
+stage: 0
+mask_ratio: 0.5
+mask_strategy: "random"
+mask_strategy_random: "batch"
+log_interval: 5
+total_epoches: 10
+machine: "localhost"
