@@ -15,6 +15,8 @@ Hyperparameters from the paper (Liu et al., SCIENCE CHINA Information Sciences, 
 - Masking Ratios: Random=85%, Temporal=50%, Frequency=50%
 """
 
+import os
+import sys
 import random
 import logging
 from typing import Optional, Tuple, List
@@ -24,6 +26,12 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 import lightning as L
+
+# Add src directory to path for imports (scripts run from project root)
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+src_dir = os.path.join(project_root, 'src')
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 from models.model import WiFo_model
 

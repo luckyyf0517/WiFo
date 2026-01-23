@@ -1,4 +1,6 @@
 # coding=utf-8
+import os
+import sys
 from functools import partial
 
 import torch
@@ -9,9 +11,13 @@ from timm.models.layers import to_2tuple
 from timm.models.vision_transformer import DropPath, Mlp
 from einops import rearrange
 
-from .embed import DataEmbedding, get_2d_sincos_pos_embed, get_1d_sincos_pos_embed_from_grid, get_1d_sincos_pos_embed_from_grid_with_resolution
+# Setup imports - scripts run from project root
+src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
-from ..utils.mask_strategy import *
+from models.embed import DataEmbedding, get_2d_sincos_pos_embed, get_1d_sincos_pos_embed_from_grid, get_1d_sincos_pos_embed_from_grid_with_resolution
+from utils.mask_strategy import *
 import copy
 import time
 from scipy import interpolate
